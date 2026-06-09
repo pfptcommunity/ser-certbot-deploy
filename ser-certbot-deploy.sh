@@ -69,7 +69,7 @@ STAMP=""
 # Runtime flags. Use integer values because Bash conditionals are simple and
 # predictable with [[ "$FLAG" -eq 1 ]].
 DRY_RUN=0
-NO_RELOAD=0
+NO_RESTART=0
 VERBOSE=0
 
 # This provides the basic usage and help information when no correct arguments
@@ -85,22 +85,10 @@ usage() {
 Usage:
   $SCRIPT_NAME [options]
 
-Certbot deploy-hook mode:
-  $SCRIPT_NAME
-
-Manual mode:
-  $SCRIPT_NAME -n relay.company.com
-  $SCRIPT_NAME --cert-name relay.company.com
-  $SCRIPT_NAME --deploy-name relay.company.com
-  $SCRIPT_NAME --cert-name relay.company.com --deploy-name relay.company.com
-
 Options:
 EOF
 
 
-  # The ampersand is used as a simple field delimiter and column handles the
-  # spacing. Blank ampersand rows are used to add visual spacing between options.
-  # This keeps help text readable without manually counting spaces.
   cat <<EOF | column -s'&' -t
   -l, --lineage &Advanced manual override for the Certbot lineage path
                      &Usually not needed; Certbot provides RENEWED_LINEAGE during deploy hooks
@@ -118,7 +106,7 @@ EOF
                         &Usually provided by Certbot as RENEWED_DOMAINS during deploy hooks
                         &Example: relay.company.com
   &
-  -s, --service &Override the SER service name to reload or restart
+  -s, --service &Override the SER service name to restart
                     &Use only if your install uses a custom systemd service name
                     &Default: $SERVICE_NAME
   &
@@ -133,15 +121,48 @@ EOF
   -f, --log-file &Optional log file path. If used, configure logrotate.
                      &Default: disabled; syslog/journald is still used when available
   &
-  -t, --dry-run &Show what would happen but do not modify files or reload services
+  -t, --dry-run &Show what would happen but do not modify files or restart services
   &
-  -r, --no-reload &Deploy files but do not reload or restart service
+  -r, --no-restart &Deploy files but do not restart the service
   &
   -v, --verbose &Print more details
   &
   -h, --help &Show this help
 EOF
-echo
+
+  cat <<EOF
+
+The following examples show how to use this tool with Certbot or for manual testing.
+
+Certbot deploy-hook mode:
+  certbot certonly \\
+    --manual \\
+    --preferred-challenges dns \\
+    --domain relay.company.com \\
+    --deploy-hook "/path/to/$SCRIPT_NAME"
+
+Certbot deploy-hook mode with explicit SER filename:
+  certbot certonly \\
+    --manual \\
+    --preferred-challenges dns \\
+    --domain relay.company.com \\
+    --domain smtp.company.com \\
+    --deploy-hook "/path/to/$SCRIPT_NAME --deploy-name outbound-relay"
+
+Manual testing:
+  $SCRIPT_NAME --domains relay.company.com --dry-run --verbose
+  $SCRIPT_NAME --cert-name relay.company.com --dry-run --verbose
+  $SCRIPT_NAME --cert-name relay.company.com --deploy-name outbound-relay --dry-run --verbose
+  
+The following examples show how to view or follow logs created by this tool.
+
+  View SER certificate deploy logs:
+    journalctl -t ser-certbot-deploy
+
+  Follow SER certificate deploy logs:
+    journalctl -t ser-certbot-deploy -f
+
+EOF
 }
 
 # Logging function logs to the current output stream and also try syslog. 
@@ -149,7 +170,7 @@ echo
 log() {
   local msg="$*"
   echo "[$(date '+%Y-%m-%dT%H:%M:%S%:z')] $msg"
-  logger -t deploy-ser-cert -- "$msg" 2>/dev/null || true
+  logger -t ser-certbot-deploy -- "$msg" 2>/dev/null || true
 }
 
 # Error logging function logs to the current output stream and also try syslog. 
@@ -157,7 +178,7 @@ log() {
 error() {
   local msg="ERROR: $*"
   echo "[$(date '+%Y-%m-%dT%H:%M:%S%:z')] $msg" >&2
-  logger -t deploy-ser-cert -p user.err -- "$msg" 2>/dev/null || true
+  logger -t ser-certbot-deploy -p user.err -- "$msg" 2>/dev/null || true
 }
 
 # Keep normal output clean, but make troubleshooting easy when -v is used.
@@ -266,8 +287,8 @@ parse_args() {
         shift
         ;;
 
-      -r|--no-reload)
-        NO_RELOAD=1
+      -r|--no-restart)
+        NO_RESTART=1
         shift
         ;;
 
@@ -356,7 +377,7 @@ log_config() {
   log "Owner: $CERT_OWNER"
   log "Group: $CERT_GROUP"
   log "Dry run: $DRY_RUN"
-  log "No reload: $NO_RELOAD"
+  log "No restart: $NO_RESTART"
   log "Log file: ${LOG_FILE:-disabled}"
 }
 
@@ -458,8 +479,8 @@ preflight_checks() {
   validate_user "$CERT_OWNER"
   validate_group "$CERT_GROUP"
 
-  # Let dry-run and --no-reload work without systemctl.
-  if [[ "$DRY_RUN" -eq 0 && "$NO_RELOAD" -eq 0 ]]; then
+  # Let dry-run and --no-restart work without systemctl.
+  if [[ "$DRY_RUN" -eq 0 && "$NO_RESTART" -eq 0 ]]; then
     require_command systemctl
   fi
 }
@@ -526,7 +547,7 @@ validate_certificate_pair() {
   cert_pub="$(certificate_public_hash "$cert_path")"
   key_pub="$(private_key_public_hash "$key_path")"
 
-  # A mismatched keypair would cause TLS failures after reload, so stop before
+  # A mismatched keypair would cause TLS failures after restart, so stop before
   # declaring the deployment successful.
   if [[ "$cert_pub" != "$key_pub" ]]; then
     fail "$cert_label certificate and private key do not match"
@@ -546,7 +567,7 @@ rollback_certificates() {
     run cp -a "${CERT_DST}.${STAMP}.bak" "$CERT_DST"
     run cp -a "${KEY_DST}.${STAMP}.bak" "$KEY_DST"
 
-    if [[ "$NO_RELOAD" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
+    if [[ "$NO_RESTART" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
       systemctl restart "$SERVICE_NAME"
     fi
   else
@@ -554,32 +575,27 @@ rollback_certificates() {
   fi
 }
 
-# Reload if possible; restart if the service needs a shove.
-reload_or_restart_service() {
-  if [[ "$NO_RELOAD" -eq 1 ]]; then
-    log "Skipping service reload because --no-reload was specified"
+# Restart the SER connector service after certificate deployment.
+# SER does not support reload, but writes queue data to disk before stopping,
+# so restart is the supported way to pick up the updated certificate and key.
+restart_service() {
+  if [[ "$NO_RESTART" -eq 1 ]]; then
+    log "Skipping service restart because --no-restart was specified"
     return 0
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN: would reload service: $SERVICE_NAME"
+    log "DRY-RUN: would restart service: $SERVICE_NAME"
     log "Dry run completed successfully"
     return 0
   fi
 
-  # Reload is gentler; restart if reload is not enough.
-  if systemctl reload "$SERVICE_NAME"; then
-    log "Reloaded $SERVICE_NAME successfully"
+  if systemctl restart "$SERVICE_NAME"; then
+    log "Restarted $SERVICE_NAME successfully"
   else
-    log "Reload failed, attempting restart"
-
-    if systemctl restart "$SERVICE_NAME"; then
-      log "Restarted $SERVICE_NAME successfully"
-    else
-      error "Restart failed after certificate deploy"
-      rollback_certificates
-      fail "service failed after deploy; rollback attempted"
-    fi
+    error "Restart failed after certificate deploy"
+    rollback_certificates
+    fail "service failed after deploy; rollback attempted"
   fi
 }
 
@@ -595,7 +611,7 @@ main() {
   backup_existing_files
   install_certificates
   validate_certificate_pair
-  reload_or_restart_service
+  restart_service
   log "Deploy completed successfully"
 }
 
