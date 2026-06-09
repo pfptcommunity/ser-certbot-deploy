@@ -1,14 +1,22 @@
-# SER Certbot Deploy Hook
+# Secure Email Relay (SER) Connector Certbot Deploy Hook
 
-A small Bash deploy hook for installing Certbot managed TLS certificates into the standard Secure Email Relay (SER) connector certificate locations.
+A small Bash deploy hook for installing Certbot-managed TLS certificates into the standard SER connector certificate locations.
 
-- SER receives certificate and key files in predictable locations.
+- The SER connector receives certificate and key files in predictable locations.
 - The private key is installed with restrictive permissions.
 - The `ser-connector` service is restarted after deployment.
 - Existing certificate and key files are backed up before replacement.
 - The deployed certificate and private key are validated as a matching pair.
 
-## Default SER layout
+## Disclaimer
+
+This code is provided as-is, without warranty, support commitment, or guarantee of fitness for a particular purpose.
+
+Users are responsible for reviewing, testing, and validating the script in their own environment before using it in production. Certificate deployment errors can cause TLS failures, service interruption, or mail-flow impact.
+
+Always test in a lab or non-production environment first, and ensure that your operational rollback process is understood and validated before production use.
+
+## Default SER connector directory and file layout
 
 By default, deployed files are written to:
 
@@ -24,7 +32,7 @@ For example, if the deploy name is `relay.company.com`, the deployed files are:
 /opt/ser/config/tls/private/relay.company.com.key
 ```
 
-A typical SER YAML configuration would reference those files:
+A typical SER connector YAML configuration would reference those files:
 
 ```yaml
 User:
@@ -109,7 +117,7 @@ The script uses the first renewed domain as the default deploy name unless `--de
 
 ## Deploy name
 
-`--deploy-name` controls only the destination filename base used by SER.
+`--deploy-name` controls only the destination filename base used by the SER connector.
 
 It does not change:
 
@@ -132,7 +140,7 @@ creates or updates:
 /opt/ser/config/tls/private/outbound-relay.key
 ```
 
-This is useful when the SER YAML uses a stable logical name that differs from the certificate's first domain.
+This is useful when the SER connector YAML uses a stable logical name that differs from the certificate's first domain.
 
 ## Install
 
@@ -186,7 +194,7 @@ sudo certbot certonly \
   --deploy-hook "/usr/local/sbin/ser-certbot-deploy.sh"
 ```
 
-Even though the certificate is valid for multiple names, the script deploys one certificate/key pair for SER.
+Even though the certificate is valid for multiple names, the script deploys one certificate/key pair for the SER connector.
 
 By default, the first domain becomes the deploy name:
 
@@ -203,7 +211,7 @@ Result:
 
 ## Certbot usage with explicit SER filename
 
-Use `--deploy-name` when the SER YAML should use a logical or stable name instead of the first certificate domain.
+Use `--deploy-name` when the SER connector YAML should use a logical or stable name instead of the first certificate domain.
 
 ```bash
 sudo certbot certonly \
@@ -318,7 +326,7 @@ If file logging is used long term, configure log rotation.
 
 ## Safety behavior
 
-The script performs several safety checks before and during deployment:
+The script performs several safety checks before and during deployment. The SER connector is restarted because the service does not support reload:
 
 - verifies source certificate and private key files exist
 - verifies required commands are available
@@ -327,12 +335,33 @@ The script performs several safety checks before and during deployment:
 - backs up existing deployed files before replacement
 - installs certificate and key with explicit ownership and modes
 - validates that the certificate and private key match
+- restarts the SER service after deployment
 - attempts rollback if service restart fails after deployment
 
-## Disclaimer
+## Certbot renewal behavior
 
-This code is provided as-is, without warranty, support commitment, or guarantee of fitness for a particular purpose.
+If the deploy hook is saved in Certbot's renewal configuration, it will be reused during future renewals.
 
-Users are responsible for reviewing, testing, and validating the script in their own environment before using it in production. Certificate deployment errors can cause TLS failures, service interruption, or mail-flow impact.
+Check the renewal configuration with:
 
-Always test in a lab or non-production environment first, and ensure that your operational rollback process is understood and validated before production use.
+```bash
+sudo cat /etc/letsencrypt/renewal/relay.company.com.conf
+```
+
+To test renewal behavior without replacing certificates, use:
+
+```bash
+sudo certbot renew --dry-run
+```
+
+## Notes
+
+For production, prefer the standard deploy-hook form:
+
+```bash
+--deploy-hook "/usr/local/sbin/ser-certbot-deploy.sh"
+```
+
+Only pass `--deploy-name` when the SER destination filename should be different from the certificate's first domain.
+
+Avoid placing the script in a user home directory for production use. Certbot renewals are normally run by system automation, and the hook should not depend on a user home path.
