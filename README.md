@@ -328,3 +328,11 @@ The script performs several safety checks before and during deployment:
 - installs certificate and key with explicit ownership and modes
 - validates that the certificate and private key match
 - attempts rollback if service restart fails after deployment
+
+## Disclaimer
+
+This code is provided as-is, without warranty, support commitment, or guarantee of fitness for a particular purpose.
+
+Users are responsible for reviewing, testing, and validating the script in their own environment before using it in production. Certificate deployment errors can cause TLS failures, service interruption, or mail-flow impact.
+
+Always test in a lab or non-production environment first, and ensure that your operational rollback process is understood and validated before production use.
