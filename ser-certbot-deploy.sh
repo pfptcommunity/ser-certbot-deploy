@@ -97,29 +97,49 @@ Manual mode:
 Options:
 EOF
 
+
   # The ampersand is used as a simple field delimiter and column handles the
-  # spacing. This keeps help text readable without manually counting spaces.
+  # spacing. Blank ampersand rows are used to add visual spacing between options.
+  # This keeps help text readable without manually counting spaces.
   cat <<EOF | column -s'&' -t
-  -l, --lineage PATH&Certbot lineage path
+  -l, --lineage &Advanced manual override for the Certbot lineage path
+                     &Usually not needed; Certbot provides RENEWED_LINEAGE during deploy hooks
                      &Example: /etc/letsencrypt/live/relay.company.com
-  -n, --cert-name NAME&Certbot certificate name
-                       &Example: relay.company.com
-  -N, --deploy-name NAME&Filename base for deployed cert/key files
-                        &Example: relay.company.com creates relay.company.com.crt and relay.company.com.key
-  -d, --domains DOMAINS&Domain names
+  &
+  -n, --cert-name &Manual mode shortcut for /etc/letsencrypt/live/<cert-name>
+                       &Usually not needed during Certbot deploy-hook execution
+                       &Example: relay.company.com resolves to /etc/letsencrypt/live/relay.company.com
+  &
+  -N, --deploy-name &Filename base for deployed SER cert/key files
+                        &Use only when SER should use a name different from the certificate's first domain
+                        &Example: outbound-relay creates outbound-relay.crt and outbound-relay.key
+  &
+  -d, --domains &Domain names used for manual mode and deploy-name fallback
+                        &Usually provided by Certbot as RENEWED_DOMAINS during deploy hooks
                         &Example: relay.company.com
-  -s, --service NAME&Service to reload or restart
+  &
+  -s, --service &Override the SER service name to reload or restart
+                    &Use only if your install uses a custom systemd service name
                     &Default: $SERVICE_NAME
-  -o, --owner USER&Owner for deployed files
+  &
+  -o, --owner &Override owner for deployed files and created directories
+                  &Use only if your SER install uses a custom service account
                   &Default: $CERT_OWNER
-  -g, --group GROUP&Group for deployed files
+  &
+  -g, --group &Override group for deployed files and created directories
+                   &Use only if your SER install uses a custom group
                    &Default: $CERT_GROUP
-  -f, --log-file PATH&Optional log file path. If used, configure logrotate.
-                     &Default: disabled
-  -t, --dry-run&Show what would happen but do not modify files
-  -r, --no-reload&Deploy files but do not reload or restart service
-  -v, --verbose&Print more details
-  -h, --help&Show this help
+  &
+  -f, --log-file &Optional log file path. If used, configure logrotate.
+                     &Default: disabled; syslog/journald is still used when available
+  &
+  -t, --dry-run &Show what would happen but do not modify files or reload services
+  &
+  -r, --no-reload &Deploy files but do not reload or restart service
+  &
+  -v, --verbose &Print more details
+  &
+  -h, --help &Show this help
 EOF
 echo
 }
