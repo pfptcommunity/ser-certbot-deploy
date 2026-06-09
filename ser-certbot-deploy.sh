@@ -28,6 +28,7 @@ SCRIPT_NAME="$(basename "$0")"
 # to be run manually with explicit arguments.
 LINEAGE=""
 CERT_NAME=""
+CERT_HOSTNAME=""
 DOMAINS="${RENEWED_DOMAINS:-}"
 
 # Source paths are resolved after we know which Certbot lineage to use.
@@ -64,6 +65,8 @@ STAMP=""
 DRY_RUN=0
 NO_RELOAD=0
 VERBOSE=0
+CERT_DST_EXPLICIT=0
+KEY_DST_EXPLICIT=0
 
 # This provides the basic usage and help information when no correct arguments
 # or environment variables are passed. 
@@ -84,6 +87,7 @@ Certbot deploy-hook mode:
 Manual mode:
   $SCRIPT_NAME -n relay.company.com
   $SCRIPT_NAME --cert-name relay.company.com
+  $SCRIPT_NAME --hostname relay.company.com
   $SCRIPT_NAME --lineage /etc/letsencrypt/live/relay.company.com --domains relay.company.com
 
 Options:
@@ -96,12 +100,14 @@ EOF
                      &Example: /etc/letsencrypt/live/relay.company.com
   -n, --cert-name NAME&Certbot certificate name
                        &Example: relay.company.com
+  -H, --hostname NAME&Hostname used to name deployed cert/key files
+                     &Example: relay.company.com
   -d, --domains DOMAINS&Domain names
                         &Example: relay.company.com
-  -c, --cert-dst PATH&Destination certificate path
-                     &Default: $CERT_DST
-  -k, --key-dst PATH&Destination private key path
-                    &Default: $KEY_DST
+  -c, --cert-dst PATH&Destination certificate path override
+                     &Default: derived from hostname/cert-name/domain
+  -k, --key-dst PATH&Destination private key path override
+                    &Default: derived from hostname/cert-name/domain
   -s, --service NAME&Service to reload or restart
                     &Default: $SERVICE_NAME
   -o, --owner USER&Owner for deployed files
@@ -198,6 +204,12 @@ parse_args() {
         shift 2
         ;;
 
+      -H|--hostname)
+        require_value "$1" "${2:-}"
+        CERT_HOSTNAME="$2"
+        shift 2
+        ;;
+
       -d|--domains)
         require_value "$1" "${2:-}"
         DOMAINS="$2"
@@ -207,12 +219,14 @@ parse_args() {
       -c|--cert-dst)
         require_value "$1" "${2:-}"
         CERT_DST="$2"
+        CERT_DST_EXPLICIT=1
         shift 2
         ;;
 
       -k|--key-dst)
         require_value "$1" "${2:-}"
         KEY_DST="$2"
+        KEY_DST_EXPLICIT=1
         shift 2
         ;;
 
@@ -325,6 +339,7 @@ log_config() {
   log "Script: $SCRIPT_NAME"
   log "Domains: ${DOMAINS:-unknown}"
   log "Cert name: ${CERT_NAME:-unknown}"
+  log "Hostname: ${CERT_HOSTNAME:-unknown}"
   log "Lineage: ${LINEAGE:-unset}"
   log "Certificate source: ${CERT_SRC:-unset}"
   log "Private key source: ${KEY_SRC:-unset}"
@@ -338,12 +353,65 @@ log_config() {
   log "Log file: ${LOG_FILE:-disabled}"
 }
 
+# Used to choose a safe filename base for derived certificate and key paths.
+derive_certificate_filename() {
+  local output_name=""
+
+  if [[ -n "$CERT_HOSTNAME" ]]; then
+    output_name="$CERT_HOSTNAME"
+  elif [[ -n "$CERT_NAME" ]]; then
+    output_name="$CERT_NAME"
+  elif [[ -n "$DOMAINS" ]]; then
+    output_name="${DOMAINS%% *}"
+  elif [[ -n "$LINEAGE" ]]; then
+    output_name="$(basename "$LINEAGE")"
+  fi
+
+  [[ -n "$output_name" ]] || fail "unable to derive certificate filename. Use --hostname, --cert-name, --domains, or explicit --cert-dst/--key-dst"
+
+  # Make wildcard certificate names filesystem friendly.
+  if [[ "$output_name" == \*.* ]]; then
+    output_name="wildcard.${output_name:2}"
+  fi
+
+  if [[ ! "$output_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    fail "invalid certificate filename derived from hostname/cert-name/domain: $output_name"
+  fi
+
+  echo "$output_name"
+}
+
+# Used to name destination files from the hostname/cert-name/domain unless explicit
+# destination paths are provided.
+derive_destination_paths() {
+  local cert_base_dir
+  local key_base_dir
+  local output_name
+
+  cert_base_dir="$(dirname "$CERT_DST")"
+  key_base_dir="$(dirname "$KEY_DST")"
+
+  if [[ "$CERT_DST_EXPLICIT" -eq 0 || "$KEY_DST_EXPLICIT" -eq 0 ]]; then
+    output_name="$(derive_certificate_filename)"
+
+    if [[ "$CERT_DST_EXPLICIT" -eq 0 ]]; then
+      CERT_DST="${cert_base_dir}/${output_name}.crt"
+    fi
+
+    if [[ "$KEY_DST_EXPLICIT" -eq 0 ]]; then
+      KEY_DST="${key_base_dir}/${output_name}.key"
+    fi
+  fi
+}
+
 # No lineage, no deploy. Guessing cert paths is how gremlins win.
 resolve_paths() {
   [[ -n "$LINEAGE" ]] || fail "certificate lineage is not set. Use --lineage, --cert-name, --domains, or run this script from a Certbot deploy hook"
 
   CERT_SRC="${LINEAGE}/fullchain.pem"
   KEY_SRC="${LINEAGE}/privkey.pem"
+
+  derive_destination_paths
 
   CERT_DIR="$(dirname "$CERT_DST")"
   KEY_DIR="$(dirname "$KEY_DST")"
@@ -389,6 +457,7 @@ preflight_checks() {
   require_command id
   require_command getent
   require_command dirname
+  require_command basename
   require_command install
 
   validate_user "$CERT_OWNER"
