@@ -28,28 +28,34 @@ SCRIPT_NAME="$(basename "$0")"
 # to be run manually with explicit arguments.
 LINEAGE=""
 CERT_NAME=""
-CERT_HOSTNAME=""
+DEPLOY_NAME=""
 DOMAINS="${RENEWED_DOMAINS:-}"
 
 # Source paths are resolved after we know which Certbot lineage to use.
 CERT_SRC=""
 KEY_SRC=""
 
-# SER expects the active certificate and key at these fixed locations.
-# The defaults can be overridden for lab testing or a different install path.
-CERT_DST="/opt/ser/config/tls/certs/server.crt"
-KEY_DST="/opt/ser/config/tls/private/server.key"
+# Default SER certificate and key directories.
+# Destination filenames are normally derived from the deploy name, cert name,
+# or primary domain so multiple certificates can coexist safely.
+CERT_DIR="/opt/ser/config/tls/certs"
+KEY_DIR="/opt/ser/config/tls/private"
 
-# Destination directories are derived from the destination file paths so the
-# script does not need separate directory options.
-CERT_DIR=""
-KEY_DIR=""
+# Destination certificate and key paths are resolved later from the standard
+# SER directories and the derived deployment filename.
+CERT_DST=""
+KEY_DST=""
 
 # These defaults match the SER connector service account. The certificate is
 # world-readable, but the private key is locked down later with mode 0600.
 SERVICE_NAME="ser-connector"
 CERT_OWNER="ser-connector"
 CERT_GROUP="root"
+CERT_DIR_MODE="0755"
+KEY_DIR_MODE="0750"
+CERT_FILE_MODE="0644"
+KEY_FILE_MODE="0600"
+
 
 # Logging is optional because many deploy hooks already run under automation.
 # When enabled, stdout and stderr are redirected to this file. If you decide
@@ -65,8 +71,6 @@ STAMP=""
 DRY_RUN=0
 NO_RELOAD=0
 VERBOSE=0
-CERT_DST_EXPLICIT=0
-KEY_DST_EXPLICIT=0
 
 # This provides the basic usage and help information when no correct arguments
 # or environment variables are passed. 
@@ -87,8 +91,8 @@ Certbot deploy-hook mode:
 Manual mode:
   $SCRIPT_NAME -n relay.company.com
   $SCRIPT_NAME --cert-name relay.company.com
-  $SCRIPT_NAME --hostname relay.company.com
-  $SCRIPT_NAME --lineage /etc/letsencrypt/live/relay.company.com --domains relay.company.com
+  $SCRIPT_NAME --deploy-name relay.company.com
+  $SCRIPT_NAME --cert-name relay.company.com --deploy-name relay.company.com
 
 Options:
 EOF
@@ -100,14 +104,10 @@ EOF
                      &Example: /etc/letsencrypt/live/relay.company.com
   -n, --cert-name NAME&Certbot certificate name
                        &Example: relay.company.com
-  -H, --hostname NAME&Hostname used to name deployed cert/key files
-                     &Example: relay.company.com
+  -N, --deploy-name NAME&Filename base for deployed cert/key files
+                        &Example: relay.company.com creates relay.company.com.crt and relay.company.com.key
   -d, --domains DOMAINS&Domain names
                         &Example: relay.company.com
-  -c, --cert-dst PATH&Destination certificate path override
-                     &Default: derived from hostname/cert-name/domain
-  -k, --key-dst PATH&Destination private key path override
-                    &Default: derived from hostname/cert-name/domain
   -s, --service NAME&Service to reload or restart
                     &Default: $SERVICE_NAME
   -o, --owner USER&Owner for deployed files
@@ -175,7 +175,7 @@ require_value() {
   fi
 
   if [[ "$2" == -* ]]; then
-    echo "ERROR: $opt_name requires a value requires a value before: $2" >&2
+    echo "ERROR: $opt_name requires a value before: $2" >&2
     usage >&2
     exit 1
   fi
@@ -204,9 +204,9 @@ parse_args() {
         shift 2
         ;;
 
-      -H|--hostname)
+      -N|--deploy-name|-H|--hostname)
         require_value "$1" "${2:-}"
-        CERT_HOSTNAME="$2"
+        DEPLOY_NAME="$2"
         shift 2
         ;;
 
@@ -216,19 +216,6 @@ parse_args() {
         shift 2
         ;;
 
-      -c|--cert-dst)
-        require_value "$1" "${2:-}"
-        CERT_DST="$2"
-        CERT_DST_EXPLICIT=1
-        shift 2
-        ;;
-
-      -k|--key-dst)
-        require_value "$1" "${2:-}"
-        KEY_DST="$2"
-        KEY_DST_EXPLICIT=1
-        shift 2
-        ;;
 
       -s|--service)
         require_value "$1" "${2:-}"
@@ -338,8 +325,8 @@ log_config() {
   log "==== Starting certificate deploy ===="
   log "Script: $SCRIPT_NAME"
   log "Domains: ${DOMAINS:-unknown}"
-  log "Cert name: ${CERT_NAME:-unknown}"
-  log "Hostname: ${CERT_HOSTNAME:-unknown}"
+  log "Cert name: ${CERT_NAME:-not provided}"
+  log "Deploy name: ${DEPLOY_NAME:-not provided}"
   log "Lineage: ${LINEAGE:-unset}"
   log "Certificate source: ${CERT_SRC:-unset}"
   log "Private key source: ${KEY_SRC:-unset}"
@@ -357,8 +344,8 @@ log_config() {
 derive_certificate_filename() {
   local output_name=""
 
-  if [[ -n "$CERT_HOSTNAME" ]]; then
-    output_name="$CERT_HOSTNAME"
+  if [[ -n "$DEPLOY_NAME" ]]; then
+    output_name="$DEPLOY_NAME"
   elif [[ -n "$CERT_NAME" ]]; then
     output_name="$CERT_NAME"
   elif [[ -n "$DOMAINS" ]]; then
@@ -367,7 +354,7 @@ derive_certificate_filename() {
     output_name="$(basename "$LINEAGE")"
   fi
 
-  [[ -n "$output_name" ]] || fail "unable to derive certificate filename. Use --hostname, --cert-name, --domains, or explicit --cert-dst/--key-dst"
+  [[ -n "$output_name" ]] || fail "unable to derive certificate filename. Use --deploy-name, --cert-name, or --domains"
 
   # Make wildcard certificate names filesystem friendly.
   if [[ "$output_name" == \*.* ]]; then
@@ -375,33 +362,21 @@ derive_certificate_filename() {
   fi
 
   if [[ ! "$output_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    fail "invalid certificate filename derived from hostname/cert-name/domain: $output_name"
+    fail "invalid certificate filename derived from deploy-name/cert-name/domain: $output_name"
   fi
 
   echo "$output_name"
 }
 
-# Used to name destination files from the hostname/cert-name/domain unless explicit
-# destination paths are provided.
+# Used to name destination files from the deploy-name/cert-name/domain using the
+# standard SER certificate and key directories.
 derive_destination_paths() {
-  local cert_base_dir
-  local key_base_dir
   local output_name
 
-  cert_base_dir="$(dirname "$CERT_DST")"
-  key_base_dir="$(dirname "$KEY_DST")"
+  output_name="$(derive_certificate_filename)"
 
-  if [[ "$CERT_DST_EXPLICIT" -eq 0 || "$KEY_DST_EXPLICIT" -eq 0 ]]; then
-    output_name="$(derive_certificate_filename)"
-
-    if [[ "$CERT_DST_EXPLICIT" -eq 0 ]]; then
-      CERT_DST="${cert_base_dir}/${output_name}.crt"
-    fi
-
-    if [[ "$KEY_DST_EXPLICIT" -eq 0 ]]; then
-      KEY_DST="${key_base_dir}/${output_name}.key"
-    fi
-  fi
+  CERT_DST="${CERT_DIR}/${output_name}.crt"
+  KEY_DST="${KEY_DIR}/${output_name}.key"
 }
 
 # No lineage, no deploy. Guessing cert paths is how gremlins win.
@@ -472,8 +447,8 @@ preflight_checks() {
 # Used to create the target directories if the appliance or lab image does not have
 # them yet. Existing directories are left alone.
 create_destination_dirs() {
-  run mkdir -p "$CERT_DIR"
-  run mkdir -p "$KEY_DIR"
+  run install -d -o "$CERT_OWNER" -g "$CERT_GROUP" -m "$CERT_DIR_MODE" "$CERT_DIR"
+  run install -d -o "$CERT_OWNER" -g "$CERT_GROUP" -m "$KEY_DIR_MODE" "$KEY_DIR"
 }
 
 # Used to keep timestamped copies before replacing anything. If a cert deploy breaks
@@ -491,8 +466,8 @@ backup_existing_files() {
 # Used to install instead of cp/chown/chmod so ownership and permissions are set
 # atomically as part of the file deployment step.
 install_certificates() {
-  run install -o "$CERT_OWNER" -g "$CERT_GROUP" -m 0644 "$CERT_SRC" "$CERT_DST"
-  run install -o "$CERT_OWNER" -g "$CERT_GROUP" -m 0600 "$KEY_SRC" "$KEY_DST"
+  run install -o "$CERT_OWNER" -g "$CERT_GROUP" -m "$CERT_FILE_MODE" "$CERT_SRC" "$CERT_DST"
+  run install -o "$CERT_OWNER" -g "$CERT_GROUP" -m "$KEY_FILE_MODE" "$KEY_SRC" "$KEY_DST"
 }
 
  # Compares the public key derived from the certificate, not filenames or dates.
