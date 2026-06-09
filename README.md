@@ -265,12 +265,12 @@ sudo /usr/local/sbin/ser-certbot-deploy.sh \
 | `-n`, `--cert-name NAME` | Manual mode shortcut for `/etc/letsencrypt/live/<cert-name>` | Useful for manual testing |
 | `-N`, `--deploy-name NAME` | Filename base for deployed SER cert/key files | Use when SER should use a name different from the certificate's first domain |
 | `-d`, `--domains DOMAINS` | Domain names used for manual mode and deploy-name fallback | Usually provided by Certbot as `RENEWED_DOMAINS` during deploy hooks |
-| `-s`, `--service NAME` | Override the SER service name to reload or restart | Use only if your install uses a custom systemd service name |
+| `-s`, `--service NAME` | Override the SER service name to restart | Use only if your install uses a custom systemd service name |
 | `-o`, `--owner USER` | Override owner for deployed files and created directories | Use only if your SER install uses a custom service account |
 | `-g`, `--group GROUP` | Override group for deployed files and created directories | Use only if your SER install uses a custom group |
 | `-f`, `--log-file PATH` | Optional log file path | If used, configure logrotate |
-| `-t`, `--dry-run` | Show what would happen but do not modify files or reload services | Recommended for testing |
-| `-r`, `--no-reload` | Deploy files but do not reload or restart service | Useful for controlled maintenance windows |
+| `-t`, `--dry-run` | Show what would happen but do not modify files or restart services | Recommended for testing |
+| `-r`, `--no-reload` | Deploy files but do not restart the service | Useful for controlled maintenance windows |
 | `-v`, `--verbose` | Print more details | Useful for troubleshooting |
 | `-h`, `--help` | Show help output | Use anytime |
 
