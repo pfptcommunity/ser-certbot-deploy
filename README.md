@@ -301,13 +301,13 @@ sudo /usr/local/sbin/ser-certbot-deploy.sh \
 The script logs to stdout/stderr and also attempts to write to syslog using the tag:
 
 ```text
-deploy-ser-cert
+ser-certbot-deploy
 ```
 
 View logs with:
 
 ```bash
-journalctl -t deploy-ser-cert
+journalctl -t ser-certbot-deploy
 ```
 
 View Certbot service logs with:
